@@ -10,13 +10,11 @@ import {
   type MovementControlMode
 } from "./game/input/movementControlPreference";
 import {
-  createInitialMissionState,
   getMissionTargetNpcId,
   isMissionStageBlocking,
   missionReducer,
   type MissionStage
 } from "./game/mission/missionState";
-import { clearMissionProgress, loadMissionProgress, saveMissionProgress } from "./game/mission/missionPersistence";
 import { getMissions, MISSIONS } from "./game/content/missions";
 import { createMissionRounds, createSessionRandom } from "./game/questions/questionRound";
 import {
@@ -39,7 +37,7 @@ import {
   StoryReviewOverlay
 } from "./game/ui/MissionUi";
 import { TutorialOverlay } from "./game/tutorial/TutorialOverlay";
-import { createInitialTutorialState, saveTutorialProgress, tutorialAllowsMissionEvent, tutorialReducer, type TutorialStep } from "./game/tutorial/tutorialState";
+import { tutorialAllowsMissionEvent, tutorialReducer, type TutorialStep } from "./game/tutorial/tutorialState";
 import { consumeProgressResetRequest } from "./game/progress/resetLearnerProgress";
 import { NavigationHud, type PlayerNavigationState } from "./game/navigation/NavigationHud";
 import { PROTOTYPE_MAP } from "./game/map/prototypeMap";
@@ -53,19 +51,134 @@ import { FishingOverlay } from "./game/fishing/FishingOverlay";
 import { FISHING_SPOTS, getDiscoveredFishingSpotIds, getFishingProximity, type FishingResultId } from "./game/fishing/fishingSystem";
 import { RegionBanner } from "./game/world/RegionBanner";
 import {
-  clearExplorationProgress,
   createInitialExplorationProgress,
-  isSafeExplorationPosition,
-  loadExplorationProgress,
-  saveExplorationProgress
+  isSafeExplorationPosition
 } from "./game/world/explorationPersistence";
 import { getWorldRegionAtPoint, type WorldRegionId } from "./game/world/worldRegions";
+import type { GameOneHostAdapter } from "./host/GameOneHostAdapter";
+import {
+  checkpointKeyForMission,
+  createGameOneSaveState,
+  GAME_ONE_SAVE_SCHEMA_VERSION,
+  hydrateGameOneProgress,
+  type HydratedGameOneProgress
+} from "./game/persistence/gameOneSaveContract";
+import { GameOneSaveCoordinator } from "./game/persistence/GameOneSaveCoordinator";
 
 type GameStatus = "loading" | "ready" | "error";
 type PauseReason = "manual" | "document-hidden" | "exit-dialog";
 
-export function GameRoutePage() {
-  consumeProgressResetRequest();
+const missingHostAdapter: GameOneHostAdapter = {
+  load: () => Promise.reject(new Error("An authenticated Game One host is required.")),
+  save: () => Promise.reject(new Error("An authenticated Game One host is required.")),
+  reset: () => Promise.reject(new Error("An authenticated Game One host is required."))
+};
+
+export function GameRoutePage({
+  host = missingHostAdapter
+}: {
+  host?: GameOneHostAdapter;
+}) {
+  const navigate = useNavigate();
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
+  const [hydration, setHydration] = useState<
+    | { status: "loading" }
+    | { status: "error"; message: string }
+    | { status: "ready"; progress: HydratedGameOneProgress }
+  >({ status: "loading" });
+  const [storedLanguagePreference] = useState(loadLanguagePreference);
+  const preferredLanguage = storedLanguagePreference ?? "en";
+  const [random] = useState(createSessionRandom);
+  const [initialRounds] = useState(() =>
+    createMissionRounds(getMissions(preferredLanguage), random)
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setHydration({ status: "loading" });
+
+    void host.load()
+      .then(async (save) => {
+        if (consumeProgressResetRequest()) {
+          await host.reset(save?.revision ?? 0);
+          save = null;
+        }
+        if (cancelled) return;
+        setHydration({
+          status: "ready",
+          progress: hydrateGameOneProgress(
+            save,
+            initialRounds,
+            preferredLanguage
+          )
+        });
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setHydration({
+          status: "error",
+          message: reason instanceof Error
+            ? reason.message
+            : "Game One progress could not be loaded."
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [host, hydrationAttempt, initialRounds, preferredLanguage]);
+
+  if (hydration.status === "loading") {
+    return (
+      <main className="game-route">
+        <StatusOverlay
+          title="Loading your adventure"
+          text="ReaDirect is safely loading your Game One progress."
+          role="status"
+        />
+      </main>
+    );
+  }
+
+  if (hydration.status === "error") {
+    return (
+      <main className="game-route">
+        <StatusOverlay
+          title="Your adventure could not load"
+          text={hydration.message}
+          role="alert"
+        >
+          <div className="game-route__overlay-actions">
+            <button
+              type="button"
+              className="game-route__overlay-button game-route__overlay-button--primary"
+              onClick={() => setHydrationAttempt((attempt) => attempt + 1)}
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              className="game-route__overlay-button game-route__overlay-button--secondary"
+              onClick={() => navigate("/learner/games")}
+            >
+              Return to Lobby
+            </button>
+          </div>
+        </StatusOverlay>
+      </main>
+    );
+  }
+
+  return <GameOneSession host={host} initialProgress={hydration.progress} />;
+}
+
+function GameOneSession({
+  host,
+  initialProgress
+}: {
+  host: GameOneHostAdapter;
+  initialProgress: HydratedGameOneProgress;
+}) {
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<KaplayGameController | null>(null);
@@ -89,7 +202,7 @@ export function GameRoutePage() {
   const [languageSelectionOpen, setLanguageSelectionOpen] = useState(() => storedLanguagePreference === null);
   const [languageSelectionRequired, setLanguageSelectionRequired] = useState(() => storedLanguagePreference === null);
   const [draftLanguage, setDraftLanguage] = useState<GameLanguage>(preferredLanguage);
-  const [initialExplorationProgress] = useState(loadExplorationProgress);
+  const [initialExplorationProgress] = useState(initialProgress.exploration);
   const [explorationProgress, setExplorationProgress] = useState(initialExplorationProgress);
   const [fishingSpot, setFishingSpot] = useState<(typeof FISHING_SPOTS)[number] | null>(null);
   const [regionBannerId, setRegionBannerId] = useState<WorldRegionId | null>(initialExplorationProgress.currentRegionId);
@@ -100,15 +213,26 @@ export function GameRoutePage() {
   const [movementControlMode, setMovementControlMode] = useState<MovementControlMode>(loadMovementControlPreference);
   const [keyboardDirections, setKeyboardDirections] = useState<ReadonlySet<Direction>>(() => new Set());
   const [random] = useState(createSessionRandom);
-  const [initialRounds] = useState(() => createMissionRounds(getMissions(preferredLanguage), random));
-  const [preparedMissionState] = useState(() => loadMissionProgress(initialRounds) ?? createInitialMissionState(initialRounds, preferredLanguage));
+  const [preparedMissionState] = useState(initialProgress.mission);
   const [missionState, dispatchMission] = useReducer(missionReducer, preparedMissionState);
   const copy = getUiCopy(missionState.language);
   const missionTargetNpcId = getMissionTargetNpcId(missionState);
   const missionStateRef = useRef(missionState);
   const showPathRef = useRef(showPath);
   const explorationProgressRef = useRef(explorationProgress);
-  const [tutorialState, dispatchTutorial] = useReducer(tutorialReducer, undefined, createInitialTutorialState);
+  const [tutorialState, dispatchTutorial] = useReducer(
+    tutorialReducer,
+    initialProgress.tutorial
+  );
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [saveCoordinator] = useState(
+    () => new GameOneSaveCoordinator(
+      host,
+      initialProgress.revision,
+      (error) => setPersistenceError(error.message)
+    )
+  );
+  const saveEffectsReadyRef = useRef(false);
   const guidedDispatchRef = useRef<(event: Parameters<typeof dispatchMission>[0]) => void>(() => undefined);
   const pauseReasonsCountRef = useRef(0);
   const missionOverlayOpenRef = useRef(false);
@@ -128,7 +252,7 @@ export function GameRoutePage() {
   const tutorialAllowsMovement = tutorialState.active &&
     (tutorialState.step === "movement" || tutorialState.step === "interaction") &&
     missionState.stage === "approachStoryCharacter" && !missionState.activeDialogue;
-  const inputEnabled = status === "ready" && !isPaused && (!missionOverlayOpen || tutorialAllowsMovement) &&
+  const inputEnabled = status === "ready" && persistenceError === null && !isPaused && (!missionOverlayOpen || tutorialAllowsMovement) &&
     (!tutorialState.active || tutorialAllowsMovement) && !languageSelectionOpen;
   const activeFishingSpot = FISHING_SPOTS[0];
   const fishingProximity = getFishingProximity(
@@ -281,12 +405,27 @@ export function GameRoutePage() {
   }, [inputEnabled]);
 
   useEffect(() => {
-    saveMissionProgress(missionState);
-  }, [missionState]);
+    if (!saveEffectsReadyRef.current) {
+      saveEffectsReadyRef.current = true;
+      return;
+    }
+
+    saveCoordinator.schedule({
+      checkpointKey: checkpointKeyForMission(missionState),
+      saveSchemaVersion: GAME_ONE_SAVE_SCHEMA_VERSION,
+      state: createGameOneSaveState(
+        missionState,
+        explorationProgress,
+        tutorialState
+      )
+    });
+  }, [explorationProgress, missionState, saveCoordinator, tutorialState]);
 
   useEffect(() => {
-    saveExplorationProgress(explorationProgress);
-  }, [explorationProgress]);
+    return () => {
+      void saveCoordinator.flush().catch(() => undefined);
+    };
+  }, [saveCoordinator]);
 
   useEffect(() => {
     if (!regionBannerId) return;
@@ -320,10 +459,6 @@ export function GameRoutePage() {
   useEffect(() => {
     controllerRef.current?.setFishingInteraction(fishingReady ? activeFishingSpot : null);
   }, [activeFishingSpot, fishingReady]);
-
-  useEffect(() => {
-    saveTutorialProgress(tutorialState);
-  }, [tutorialState]);
 
   useEffect(() => {
     if (!tutorialState.active || tutorialState.step !== "movement") return;
@@ -461,11 +596,25 @@ export function GameRoutePage() {
     });
   }, [setPauseReason]);
 
-  const exitToDashboard = () => {
+  const exitToLobby = async () => {
+    try {
+      await saveCoordinator.flush();
+    } catch {
+      return;
+    }
     navigate("/learner/games");
   };
 
-  const replayMission = () => {
+  const exitWithoutSaving = () => {
+    navigate("/learner/games");
+  };
+
+  const replayMission = async () => {
+    try {
+      await saveCoordinator.reset();
+    } catch {
+      return;
+    }
     const nextRounds = createMissionRounds(getMissions(missionState.language), random, missionState.rounds);
     controllerRef.current?.clearInput();
     controllerRef.current?.resetMission();
@@ -473,11 +622,9 @@ export function GameRoutePage() {
     const resetExploration = createInitialExplorationProgress();
     setExplorationProgress(resetExploration);
     explorationProgressRef.current = resetExploration;
-    clearExplorationProgress();
     setFishingSpot(null);
     setMapOpen(false);
     setShowPath(true);
-    clearMissionProgress();
     dispatchMission({ type: "RESET_ACTIVITY", rounds: nextRounds });
   };
 
@@ -541,23 +688,23 @@ export function GameRoutePage() {
         aria-label={`${copy.gameTitle} ${copy.gameHost}`}
         className="game-route__stage"
       >
-        <header className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between gap-4 bg-gradient-to-b from-[#081510]/85 to-transparent px-[max(0.75rem,env(safe-area-inset-left))] py-[max(0.75rem,env(safe-area-inset-top))]">
-          <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#facc15] sm:text-sm">
+        <header className="game-route__header">
+          <div className="game-route__heading">
+            <p className="game-route__phase-label">
               {copy.phaseLabel}
             </p>
-            <h1 className="text-base font-black drop-shadow sm:text-2xl">
-              <span className="game-title-short sm:hidden">{copy.shortTitle}</span>
-              <span className="game-title-full hidden sm:inline">{copy.gameTitle}</span>
+            <h1 className="game-route__title">
+              <span className="game-title-short">{copy.shortTitle}</span>
+              <span className="game-title-full">{copy.gameTitle}</span>
             </h1>
           </div>
-          <div className="pointer-events-auto flex shrink-0 gap-2 sm:gap-3">
+          <div className="game-route__header-actions">
             <button
               type="button"
               onClick={openLanguageSelection}
               disabled={tutorialState.active}
               aria-label={`${copy.changeLanguage}: ${missionState.language === "en" ? "English" : "Filipino"}`}
-              className="game-language-button min-h-11 rounded-md border-2 border-white bg-[#081510]/65 px-3 font-extrabold text-white shadow"
+              className="game-route__header-button game-language-button"
             >
               <span className="game-language-label-full">{missionState.language === "en" ? "English" : "Filipino"}</span>
               <span className="game-language-label-short" aria-hidden="true">{missionState.language === "en" ? "EN" : "FIL"}</span>
@@ -566,7 +713,7 @@ export function GameRoutePage() {
               type="button"
               onClick={() => setAudioSettingsOpen(true)}
               disabled={tutorialState.active}
-              className="min-h-11 rounded-md border-2 border-white bg-[#081510]/65 px-3 font-extrabold text-white shadow"
+              className="game-route__header-button"
             >
               {copy.sound}
             </button>
@@ -574,7 +721,7 @@ export function GameRoutePage() {
               type="button"
               onClick={() => setPauseReason("manual", true)}
               disabled={status !== "ready" || missionState.activityCompleted || tutorialState.active}
-              className="min-h-11 rounded-md bg-white/95 px-3 font-extrabold text-[#13251d] shadow sm:px-4"
+              className="game-route__header-button game-route__header-button--light"
             >
               {copy.pause}
             </button>
@@ -582,7 +729,7 @@ export function GameRoutePage() {
               type="button"
               onClick={openExitDialog}
               disabled={tutorialState.active}
-              className="min-h-11 rounded-md border-2 border-white bg-[#081510]/45 px-3 font-extrabold text-white shadow sm:px-4"
+              className="game-route__header-button game-route__header-button--transparent"
             >
               {copy.exit}
             </button>
@@ -610,19 +757,19 @@ export function GameRoutePage() {
               text={copy.startErrorHelp}
               role="alert"
             >
-              <p className="sr-only">Technical reason: {errorMessage}</p>
-              <div className="mt-5 flex flex-wrap justify-center gap-3">
+              <p className="game-route__visually-hidden">Technical reason: {errorMessage}</p>
+              <div className="game-route__overlay-actions">
                 <button
                   type="button"
                   onClick={retry}
-                  className="min-h-12 rounded-md bg-[#facc15] px-5 font-extrabold text-[#13251d]"
+                  className="game-route__overlay-button game-route__overlay-button--primary"
                 >
                   {copy.retry}
                 </button>
                 <button
                   type="button"
-                  onClick={exitToDashboard}
-                  className="min-h-12 rounded-md bg-white px-5 font-extrabold text-[#13251d]"
+                  onClick={() => void exitToLobby()}
+                  className="game-route__overlay-button game-route__overlay-button--secondary"
                 >
                   {copy.exitDashboard}
                 </button>
@@ -630,26 +777,51 @@ export function GameRoutePage() {
             </StatusOverlay>
           )}
 
-          {isPaused && status !== "error" && !exitDialogOpen && (
+          {persistenceError && (
+            <StatusOverlay
+              title="Progress could not be saved"
+              text={persistenceError}
+              role="alert"
+            >
+              <div className="game-route__overlay-actions">
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="game-route__overlay-button game-route__overlay-button--primary"
+                >
+                  Reload Progress
+                </button>
+                <button
+                  type="button"
+                  onClick={exitWithoutSaving}
+                  className="game-route__overlay-button game-route__overlay-button--secondary"
+                >
+                  Return to Lobby
+                </button>
+              </div>
+            </StatusOverlay>
+          )}
+
+          {isPaused && status !== "error" && !persistenceError && !exitDialogOpen && (
             <StatusOverlay title={pauseTitle} text={copy.pauseMessage}>
-              <div className="mt-5 flex flex-wrap justify-center gap-3">
+              <div className="game-route__overlay-actions">
                 <button
                   type="button"
                   onClick={() => setPauseReason("manual", false)}
                   disabled={activePauseReason !== "manual"}
-                  className="min-h-12 rounded-md bg-[#facc15] px-5 font-extrabold text-[#13251d] disabled:cursor-not-allowed disabled:bg-[#9cab9f]"
+                  className="game-route__overlay-button game-route__overlay-button--primary"
                 >
                   {copy.resume}
                 </button>
                 <button type="button" onClick={() => {
                   setPauseReason("manual", false);
                   dispatchTutorial({ type: "REOPEN", step: tutorialStepForMissionStage(missionState.stage) });
-                }} className="min-h-12 rounded-md bg-[#dcefe5] px-5 font-extrabold text-[#315343]">{copy.showTutorial}</button>
-                <button type="button" onClick={openLanguageSelection} className="min-h-12 rounded-md border-2 border-[#176b4d] bg-white px-5 font-extrabold text-[#176b4d]">{copy.changeLanguage}</button>
+                }} className="game-route__overlay-button game-route__overlay-button--muted">{copy.showTutorial}</button>
+                <button type="button" onClick={openLanguageSelection} className="game-route__overlay-button game-route__overlay-button--outline">{copy.changeLanguage}</button>
                 <button
                   type="button"
                   onClick={openExitDialog}
-                  className="min-h-12 rounded-md bg-white px-5 font-extrabold text-[#13251d]"
+                  className="game-route__overlay-button game-route__overlay-button--secondary"
                 >
                   {copy.exit}
                 </button>
@@ -774,12 +946,12 @@ export function GameRoutePage() {
                 });
               }}
             />
-            <RemainingQuestionsOverlay state={missionState} dispatch={dispatchGuided} onDashboard={exitToDashboard} />
+            <RemainingQuestionsOverlay state={missionState} dispatch={dispatchGuided} onDashboard={exitToLobby} />
             <MissionResultOverlay state={missionState} dispatch={dispatchGuided} />
             <CompletionOverlay
               state={missionState}
               onReplay={replayMission}
-              onDashboard={exitToDashboard}
+              onDashboard={exitToLobby}
             />
           </>
         )}
@@ -842,33 +1014,33 @@ export function GameRoutePage() {
       </section>
 
       {exitDialogOpen && (
-        <div className="fixed inset-0 z-[70] grid place-items-center bg-black/70 p-6">
+        <div className="game-route__exit-layer">
           <div
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="exit-title"
             aria-describedby="exit-description"
-            className="w-full max-w-md rounded-lg bg-white p-6 text-[#13251d] shadow-2xl"
+            className="game-route__exit-dialog"
           >
-            <h2 id="exit-title" className="text-2xl font-black">
+            <h2 id="exit-title" className="game-route__exit-title">
               {copy.exitTitle}
             </h2>
-            <p id="exit-description" className="mt-3 text-lg leading-7 text-[#315343]">
+            <p id="exit-description" className="game-route__exit-description">
               {copy.exitDescription}
             </p>
-            <div className="mt-6 flex flex-wrap justify-end gap-3">
+            <div className="game-route__exit-actions">
               <button
                 type="button"
                 onClick={closeExitDialog}
-                className="min-h-12 rounded-md border-2 border-[#176b4d] px-5 font-extrabold text-[#176b4d]"
+                className="game-route__exit-button game-route__exit-button--cancel"
               >
                 {copy.keepPlaying}
               </button>
               <button
                 type="button"
-                onClick={exitToDashboard}
-                className="min-h-12 rounded-md bg-[#176b4d] px-5 font-extrabold text-white"
+                onClick={() => void exitToLobby()}
+                className="game-route__exit-button game-route__exit-button--confirm"
               >
                 {copy.exitDashboard}
               </button>
@@ -895,11 +1067,11 @@ function StatusOverlay({
     <div
       role={role}
       aria-live={role === "alert" ? "assertive" : "polite"}
-      className="absolute inset-0 z-20 grid place-items-center bg-[#081510]/88 p-6 text-center backdrop-blur-sm"
+      className="game-route__status-overlay"
     >
-      <div className="max-w-lg">
-        <h2 className="text-3xl font-black">{title}</h2>
-        <p className="mt-3 text-lg leading-7 text-[#dcefe5]">{text}</p>
+      <div className="game-route__status-content">
+        <h2 className="game-route__status-title">{title}</h2>
+        <p className="game-route__status-message">{text}</p>
         {children}
       </div>
     </div>

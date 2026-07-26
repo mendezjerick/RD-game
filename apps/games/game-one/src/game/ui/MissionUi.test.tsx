@@ -221,7 +221,7 @@ describe("connected mission React UI", () => {
     render(<CompletionOverlay state={state} onReplay={vi.fn()} onDashboard={vi.fn()} />);
     expect(screen.getByRole("dialog", { name: /Reading Journey Is Open/i })).toHaveTextContent(/central plaza.*market.*old bridge.*forest route/i);
     expect(screen.getByRole("button", { name: /Replay Journey/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /Return to Dashboard/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Return to Lobby/i })).toBeVisible();
     expect(screen.queryByText(/score|grade|ranking|diagnostic/i)).not.toBeInTheDocument();
   });
 

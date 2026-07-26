@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { GAME_ASSETS } from "../assets/assetRegistry";
 import { NPCS } from "../content/npcs";
 import {
   createKaplayGame,
@@ -82,7 +83,7 @@ describe("createKaplayGame", () => {
     );
     expect(runtime.loadSprite).toHaveBeenCalledWith(
       "learner-walk",
-      "/assets/game/characters/learner/villager-walk.png",
+      GAME_ASSETS.learnerWalk.path,
       expect.objectContaining({ sliceX: 4, sliceY: 4 })
     );
     expect(runtime.loadSprite).toHaveBeenCalledWith(
