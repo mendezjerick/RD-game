@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { GAME_ASSETS, REQUIRED_ASSET_KEYS, validateRequiredAssets } from "./assetRegistry";
 
 describe("asset registry", () => {
@@ -19,8 +17,8 @@ describe("asset registry", () => {
         "mapFragment"
       ])
     );
-    expect(GAME_ASSETS.ninjaAdventureLicense.path).toBe(
-      "/assets/game/licenses/ninja-adventure-cc0-license.txt"
+    expect(GAME_ASSETS.ninjaAdventureLicense.path).toMatch(
+      /\/src\/assets\/runtime\/licenses\/ninja-adventure-cc0-license\.txt$/
     );
   });
 
@@ -57,16 +55,17 @@ describe("asset registry", () => {
       GAME_ASSETS.villageMarketCounter
     ];
 
-    expect(structures.every((asset) => asset.path === "/assets/game/tiles/tileset-house.png")).toBe(true);
+    expect(structures.every((asset) => asset.path === GAME_ASSETS.villageRedHouse.path)).toBe(true);
     expect(GAME_ASSETS.villageRedHouse.region).toMatchObject({ width: 64, height: 48 });
     expect(GAME_ASSETS.villageLearningHall.region).toMatchObject({ width: 64, height: 48 });
     expect(GAME_ASSETS.villageEastHouse.region).toMatchObject({ width: 64, height: 48 });
     expect(GAME_ASSETS.villageMarketCounter.region).toMatchObject({ width: 64, height: 48 });
   });
 
-  it("points to imported public asset files", () => {
+  it("keeps every imported runtime asset inside the Game One module", () => {
     for (const asset of Object.values(GAME_ASSETS)) {
-      expect(existsSync(join(process.cwd(), "public", asset.path.replace(/^\//, "")))).toBe(true);
+      expect(asset.path).toContain("/apps/games/game-one/src/assets/runtime/");
+      expect(asset.path).not.toContain("/public/");
     }
   });
 });

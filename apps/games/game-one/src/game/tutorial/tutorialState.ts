@@ -24,6 +24,12 @@ export type TutorialState = {
   finished: boolean;
 };
 
+export type StoredTutorialProgress = {
+  version: 2;
+  finished: boolean;
+  completedSteps: readonly TutorialStep[];
+};
+
 export type TutorialEvent =
   | { type: "COMPLETE_STEP"; step: TutorialStep }
   | { type: "REQUEST_SKIP" }
@@ -32,8 +38,12 @@ export type TutorialEvent =
   | { type: "REOPEN"; step?: TutorialStep }
   | { type: "FINISH" };
 
-export function createInitialTutorialState(storage: Storage = window.localStorage): TutorialState {
-  const saved = readTutorialProgress(storage);
+export function createInitialTutorialState(): TutorialState {
+  return restoreTutorialProgress(null);
+}
+
+export function restoreTutorialProgress(value: unknown): TutorialState {
+  const saved = parseTutorialProgress(value);
   if (saved?.finished) {
     return {
       active: false,
@@ -43,10 +53,12 @@ export function createInitialTutorialState(storage: Storage = window.localStorag
       finished: true
     };
   }
+  const completedSteps = saved?.completedSteps ?? [];
+  const nextStep = TUTORIAL_STEPS.find((step) => !completedSteps.includes(step)) ?? "ready";
   return {
     active: true,
-    step: "missionPanel",
-    completedSteps: saved?.completedSteps ?? [],
+    step: nextStep,
+    completedSteps,
     skipConfirmationOpen: false,
     finished: false
   };
@@ -80,15 +92,12 @@ export function tutorialReducer(state: TutorialState, event: TutorialEvent): Tut
   }
 }
 
-export function saveTutorialProgress(state: TutorialState, storage: Storage = window.localStorage) {
-  storage.setItem(
-    TUTORIAL_PROGRESS_KEY,
-    JSON.stringify({ version: 2, finished: state.finished, completedSteps: state.completedSteps })
-  );
-}
-
-export function clearTutorialProgress(storage: Storage = window.localStorage) {
-  storage.removeItem(TUTORIAL_PROGRESS_KEY);
+export function createStoredTutorialProgress(state: TutorialState): StoredTutorialProgress {
+  return {
+    version: 2,
+    finished: state.finished,
+    completedSteps: state.completedSteps
+  };
 }
 
 export function tutorialAllowsMissionEvent(step: TutorialStep, eventType: string) {
@@ -108,19 +117,15 @@ export function tutorialAllowsMissionEvent(step: TutorialStep, eventType: string
   }
 }
 
-function readTutorialProgress(storage: Storage) {
-  try {
-    const raw = storage.getItem(TUTORIAL_PROGRESS_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as { version?: number; finished?: boolean; completedSteps?: TutorialStep[] };
-    if (value.version !== 2 || !Array.isArray(value.completedSteps)) return null;
-    return {
-      finished: Boolean(value.finished),
-      completedSteps: value.completedSteps.filter((step): step is TutorialStep => TUTORIAL_STEPS.includes(step))
-    };
-  } catch {
-    return null;
-  }
+function parseTutorialProgress(value: unknown): StoredTutorialProgress | null {
+  if (!value || typeof value !== "object") return null;
+  const stored = value as Partial<StoredTutorialProgress>;
+  if (stored.version !== 2 || !Array.isArray(stored.completedSteps)) return null;
+  return {
+    version: 2,
+    finished: Boolean(stored.finished),
+    completedSteps: stored.completedSteps.filter((step): step is TutorialStep => TUTORIAL_STEPS.includes(step))
+  };
 }
 
 function addUnique<T>(items: readonly T[], item: T): readonly T[] {

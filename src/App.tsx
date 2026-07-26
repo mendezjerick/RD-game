@@ -8,6 +8,10 @@ import {
 import { GameOneRoutePage } from "@readirect/game-one";
 import { GameTwoRoutePage } from "@readirect/game-two";
 
+import { createGameOneStandaloneHostAdapter } from "./gameOneStandaloneHostAdapter";
+
+const gameOneHost = createGameOneStandaloneHostAdapter();
+
 function DashboardReturnPage() {
   const navigate = useNavigate();
 
@@ -39,7 +43,7 @@ export function App() {
           path="/learner/games/game-one"
           element={
             <RequireSkeletonGameProfile>
-              <GameOneRoutePage />
+              <GameOneRoutePage host={gameOneHost} />
             </RequireSkeletonGameProfile>
           }
         />

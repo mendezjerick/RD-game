@@ -52,7 +52,7 @@ importers:
   apps/games/game-one:
     dependencies:
       kaplay:
-        specifier: ^3001.0.0
+        specifier: 3001.0.19
         version: 3001.0.19
       react:
         specifier: 19.2.7
